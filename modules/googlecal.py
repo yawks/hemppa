@@ -151,28 +151,28 @@ class MatrixModule(BotModule):
 
         if len(events) > 0:
             self.logger.info(f'Found {len(events)} events')
-            await self.send_events(bot, events, room)
+            await self.send_events(bot, events, room.room_id)
         else:
             self.logger.info(f'No events found')
             await bot.send_text(room, 'No events found, try again later :)')
 
-    async def send_events(self, bot, events, room):
+    async def send_events(self, bot, events, room_id):
         previous_day = None
         events_of_same_day = []
-        for event in events:
+        for event in events:  # group events by day
             start_date = self.parse_date(event['start'].get('dateTime', event['start'].get('date')))
             current_day = datetime.strftime(start_date, '%a %d %b')
             if previous_day is None or current_day == previous_day:
                 events_of_same_day.append(event)
             else:
-                await self.send_html_same_day_events(bot, room, events_of_same_day, previous_day)
+                await self.send_html_same_day_events(bot, room_id, events_of_same_day, previous_day)
                 events_of_same_day = []
 
             previous_day = current_day
 
-        await self.send_html_same_day_events(bot, room, events_of_same_day, previous_day)
+        await self.send_html_same_day_events(bot, room_id, events_of_same_day, previous_day)
 
-    async def send_html_same_day_events(self, bot, room, events_of_same_day, current_day):
+    async def send_html_same_day_events(self, bot, room_id, events_of_same_day, current_day):
         html = f"<hr/><h2>📅 {current_day}</h2>\n"
         text = f" 📅 {current_day}\n"
         for event in events_of_same_day:
@@ -181,7 +181,7 @@ class MatrixModule(BotModule):
             img_videocall = await get_videocall_logo_from_summary(bot, event)
             html += f'<strong>{start_hour}{end_hour}</strong> <a href="{event["htmlLink"]}">{event["summary"]}</a> {img_videocall}<br/>\n'
             text += f' - {start_hour}{end_hour} \n {event["summary"]}\n\n'
-        await bot.send_html(room, html, text)
+        await bot.send_html_with_room_id(room_id, html, text)
 
     def get_event_hours(self, event):
         start_hour = "All day"
@@ -202,12 +202,13 @@ class MatrixModule(BotModule):
         return events
 
     def list_today(self, calid):
-        start_time = datetime.utcnow()
-        end_time = start_time + timedelta(hours=48)
-        now = start_time.isoformat() + 'Z'
+        now = datetime.now()
+        start_time = datetime(now.year, now.month, now.day)
+        end_time = datetime(now.year, now.month, now.day, 23, 59, 59, 999999)
+        start = start_time.isoformat() + 'Z'
         end = end_time.isoformat() + 'Z'
-        self.logger.info(f'Looking for events between {now} {end}')
-        events_result = self.service.events().list(calendarId=calid, timeMin=now,
+        self.logger.info(f'Looking for events between {start} {end}')
+        events_result = self.service.events().list(calendarId=calid, timeMin=start,
                                                    timeMax=end, maxResults=10, singleEvents=True,
                                                    orderBy='startTime').execute()
         return events_result.get('items', [])
@@ -257,6 +258,16 @@ class MatrixModule(BotModule):
                             start_hour, end_hour = self.get_event_hours(event)
                             html, text = self.get_html_and_text_messages(event, start_hour, end_hour)
                             await bot.send_html_with_room_id(room_id, html, text)
+
+                    await self.daily_digest(room_id, calid, bot)
+
+    async def daily_digest(self, room_id, calid, bot):
+        """
+        Display today events at 7:30am except during weekends
+        """
+        now = datetime.now()
+        if now.weekday() not in [5, 6] and now.hour == 7 and now.minute == 30:
+            await self.send_events(bot, self.list_today(calid), room_id)
 
     def get_html_and_text_messages(self, event, start_hour, end_hour):
         html = f'<hr/>📣 <i>1 minute until this event:</i><br/><strong>{start_hour}{end_hour} <a href="{event["htmlLink"]}">{event["summary"]}</a></strong><br/>\n'
