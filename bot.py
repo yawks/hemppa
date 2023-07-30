@@ -28,6 +28,7 @@ from nio import AsyncClient, InviteEvent, JoinError, RoomMessageText, MatrixRoom
 
 from modules.common.exceptions import CommandRequiresAdmin, CommandRequiresOwner, UploadFailed
 
+
 class Bot:
 
     def __init__(self):
@@ -77,11 +78,10 @@ class Bot:
         :return: [matrix_uri, mimetype, w, h, size], or None
         """
         cache_key = url
-        if blob:  ## url is bytes, cannot be used a key for cache
+        if blob:  # url is bytes, cannot be used a key for cache
             cache_key = hashlib.md5(url).hexdigest()
 
         return self.uri_cache.get(cache_key)
-
 
     async def upload_and_send_image(self, room, url, event=None, text=None, blob=False, blob_content_type="image/png", no_cache=False):
         """
@@ -103,7 +103,7 @@ class Bot:
             try:
                 matrix_uri, mimetype, w, h, size = res
                 return await self.send_image(room, matrix_uri, text, event, mimetype, w, h, size)
-            except ValueError: # broken cache?
+            except ValueError:  # broken cache?
                 self.logger.warning(f"Image cache for {url} could not be unpacked, attempting to re-upload...")
         try:
             matrix_uri, mimetype, w, h, size = await self.upload_image(url, blob=blob, no_cache=no_cache)
@@ -143,7 +143,7 @@ class Bot:
         response: UploadResponse
 
         cache_key = url_or_bytes
-        if blob:  ## url is bytes, cannot be used a key for cache
+        if blob:  # url is bytes, cannot be used a key for cache
             cache_key = hashlib.md5(url_or_bytes).hexdigest()
 
         if no_cache:
@@ -203,6 +203,9 @@ class Bot:
         return await self.room_send(room.room_id, event, 'm.room.message', msg)
 
     async def send_html(self, room, html, plaintext, event=None, msgtype="m.notice", bot_ignore=False):
+        await self.send_html_with_room_id(room.room_id, html, plaintext, event=event, msgtype=msgtype, bot_ignore=bot_ignore)
+
+    async def send_html_with_room_id(self, room_id, html, plaintext, event=None, msgtype="m.notice", bot_ignore=False):
         """
 
         :param room: A MatrixRoom the html should be send to
@@ -221,7 +224,7 @@ class Bot:
         }
         if bot_ignore:
             msg["org.vranki.hemppa.ignore"] = "true"
-        await self.room_send(room.room_id, event, 'm.room.message', msg)
+        await self.room_send(room_id, event, 'm.room.message', msg)
 
     async def send_location(self, room, body, latitude, longitude, event=None, bot_ignore=False, asset='m.pin'):
         """
@@ -239,8 +242,8 @@ class Bot:
             "body": str(body),
             "geo_uri": 'geo:' + str(latitude) + ',' + str(longitude),
             "msgtype": "m.location",
-            "org.matrix.msc3488.asset": { "type": asset }
-            }
+            "org.matrix.msc3488.asset": {"type": asset}
+        }
         await self.room_send(room.room_id, event, 'm.room.message', locationmsg)
 
     async def send_image(self, room, url, body, event=None, mimetype=None, width=None, height=None, size=None):
@@ -328,13 +331,12 @@ class Bot:
         # Nope, let's create one
         if not msg_room:
             msg_room = await self.client.room_create(visibility=RoomVisibility.private,
-                name=roomname,
-                is_direct=True,
-                preset=RoomPreset.private_chat,
-                invite={mxid},
-            )
+                                                     name=roomname,
+                                                     is_direct=True,
+                                                     preset=RoomPreset.private_chat,
+                                                     invite={mxid},
+                                                     )
         return msg_room
-
 
     def remove_callback(self, callback):
         for cb_object in self.client.event_callbacks:
@@ -459,16 +461,15 @@ class Bot:
     def starts_with_command(body):
         """Checks if body starts with ! and has one or more letters after it"""
         return re.match(r"^!\w.*", body) is not None
-    
+
     def on_invite_whitelist(self, sender):
         for entry in self.invite_whitelist:
             if entry == sender:
-                return True 
+                return True
             controll_value = entry.split(':')
             if controll_value[0] == '@*' and controll_value[1] == sender.split(':')[1]:
                 return True
         return False
-
 
     async def invite_cb(self, room, event):
         room: MatrixRoom
@@ -492,7 +493,7 @@ class Bot:
 
     async def memberevent_cb(self, room, event):
         # Automatically leaves rooms where bot is alone.
-        if room.member_count == 1 and event.membership=='leave' and event.sender != self.matrix_user:
+        if room.member_count == 1 and event.membership == 'leave' and event.sender != self.matrix_user:
             self.logger.info(f"Membership event in {room.display_name} ({room.room_id}) with {room.member_count} members by '{event.sender}' (I am {self.matrix_user})- leaving room as i don't want to be left alone!")
             await self.client.room_leave(room.room_id)
 
@@ -578,7 +579,7 @@ class Bot:
         leave_empty_rooms = os.getenv('LEAVE_EMPTY_ROOMS')
 
         if matrix_server and self.matrix_user and bot_owners and access_token:
-            self.client = AsyncClient(matrix_server, self.matrix_user, ssl = matrix_server.startswith("https://"))
+            self.client = AsyncClient(matrix_server, self.matrix_user, ssl=matrix_server.startswith("https://"))
             self.client.access_token = access_token
             self.join_on_invite = (join_on_invite or '').lower() == 'true'
             self.invite_whitelist = invite_whitelist.split(',') if invite_whitelist is not None else []
