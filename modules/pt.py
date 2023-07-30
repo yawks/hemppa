@@ -3,9 +3,10 @@ import urllib
 import urllib.request
 from urllib.parse import urlencode, quote_plus
 import json
-import time 
+import time
 
 from modules.common.module import BotModule
+
 
 class PeerTubeClient:
     def __init__(self):
@@ -13,17 +14,19 @@ class PeerTubeClient:
 
     def search(self, search_string, count=0):
         if count == 0:
-            count = 15 # Pt default, could also remove from params..
+            count = 15  # Pt default, could also remove from params..
         params = urlencode({'search': search_string, 'count': count}, quote_via=quote_plus)
         search_url = self.instance_url + 'api/v1/search/videos?' + params
         response = urllib.request.urlopen(search_url)
         data = json.loads(response.read().decode("utf-8"))
         return data
 
+
 class MatrixModule(BotModule):
     def __init__(self, name):
         super().__init__(name)
         self.instance_url = 'https://sepiasearch.org/'
+        self.enabled = False
 
     def matrix_start(self, bot):
         super().matrix_start(bot)
@@ -61,7 +64,7 @@ class MatrixModule(BotModule):
                     text = f'{video_url} : {video["name"]} {video.get("description") or ""} [{duration}]'
                     await bot.send_html(room, html, text, bot_ignore=True)
             else:
-                    await bot.send_text(room, 'Sorry, no videos found found.', bot_ignore=True)
+                await bot.send_text(room, 'Sorry, no videos found found.', bot_ignore=True)
 
         else:
             await bot.send_text(room, 'Usage: !pt <query> or !ptall <query> to return all results')

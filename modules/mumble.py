@@ -11,6 +11,7 @@ class MatrixModule(BotModule):
         super().__init__(name)
         self.host = None
         self.port = 64738
+        self.enabled = False
 
     def set_settings(self, data):
         super().set_settings(data)

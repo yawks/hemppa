@@ -21,6 +21,7 @@ class gfycat(object):
     def __init__(self):
         super(gfycat, self).__init__()
 
+
     def __fetch(self, url, param):
         import json
         try:
@@ -77,6 +78,11 @@ class _gfycatSearch(_gfycatUtils):
         super(_gfycatSearch, self).__init__(param, param.json["gfycats"])
 
 class MatrixModule(BotModule):
+
+    def __init__(self, name):
+        super().__init__(name)
+        self.enabled = False
+
     async def matrix_message(self, bot, room, event):
         args = event.body.split()
         if len(args) > 1:

@@ -18,6 +18,7 @@ class Apod:
         self.date = date
         self.media_type = media_type
         self.url = url
+        self.enabled = False
 
     @staticmethod
     def create_from_json(json):
@@ -35,6 +36,7 @@ class MatrixModule(BotModule):
 
     def __init__(self, name):
         super().__init__(name)
+        self.enabled = False
         self.api_key = os.getenv("APOD_API_KEY", "DEMO_KEY")
         self.update_api_urls()
         self.matrix_uri_cache = dict()

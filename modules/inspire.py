@@ -10,6 +10,7 @@ class MatrixModule(BotModule):
         super().__init__(name)
         self.url_generator_url = "https://inspirobot.me/api?generate=true"
         self.matrix_uri_cache = dict()
+        self.enabled = False
 
     async def matrix_message(self, bot, room, event):
         self.logger.debug(f"room: {room.name} sender: {event.sender} wants to be inspired!")

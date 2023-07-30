@@ -16,6 +16,7 @@ class MatrixModule(BotModule):
     """
     def __init__(self, name):
         super().__init__(name)
+        self.enabled = False
 
     def help(self):
         return "Commands for interacting with the current room "

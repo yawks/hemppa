@@ -6,6 +6,7 @@ class MatrixModule(BotModule):
     def __init__(self, name):
         super().__init__(name)
         self.msg_users = False
+        self.info = ""
 
     def get_settings(self):
         data = super().get_settings()

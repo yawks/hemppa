@@ -9,6 +9,10 @@ class MatrixModule(BotModule):
     daily_commands = dict()  # room_id -> command json
     last_hour = datetime.now().hour
 
+    def __init__(self, name):
+        super().__init__(name)
+        self.enabled = False
+
     async def matrix_message(self, bot, room, event):
         bot.must_be_admin(room, event)
 

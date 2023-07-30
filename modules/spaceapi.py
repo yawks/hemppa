@@ -3,12 +3,14 @@ from urllib.request import urlopen
 import json
 import time
 
+
 class MatrixModule(PollingService):
     def __init__(self, name):
         super().__init__(name)
         self.accountroomid_laststatus = {}
         self.template = '{spacename} is now {open_closed}'
         self.i18n = {'open': 'open 🔓', 'closed': 'closed 🔒'}
+        self.enabled = False
 
     async def poll_implementation(self, bot, account, roomid, send_messages):
         self.logger.debug(f'polling space api {account}.')

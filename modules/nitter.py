@@ -13,6 +13,7 @@ class MatrixModule(BotModule):
         self.regex = re.compile(r'https://twitter.com/([^?]*)')
         self.bot = None
         self.enabled_rooms = []
+        self.enabled = False
 
     def matrix_start(self, bot):
         """

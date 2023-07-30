@@ -6,6 +6,10 @@ from modules.common.module import BotModule
 class MatrixModule(BotModule):
     bot = None
 
+    def __init__(self, name):
+        super().__init__(name)
+        self.enabled = False
+
     def matrix_start(self, bot):
         super().matrix_start(bot)
         self.bot = bot

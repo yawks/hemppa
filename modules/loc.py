@@ -9,6 +9,7 @@ class MatrixModule(BotModule):
         super().__init__(name)
         self.bot = None
         self.enabled_rooms = []
+        self.enabled = False
 
     def matrix_start(self, bot):
         super().matrix_start(bot)
