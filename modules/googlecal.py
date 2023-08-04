@@ -134,7 +134,7 @@ class MatrixModule(BotModule):
                 calid = args[2]
                 self.logger.info(f'Removing calendar {calid} from room id {room.room_id}')
 
-                if self.calendar_rooms.get(room.room_id):
+                if self.calendar_rooms.get(room.room_id) and calid in self.calendar_rooms[room.room_id]:
                     self.calendar_rooms[room.room_id].remove(calid)
 
                 self.logger.info(f'Calendars now for this room {self.calendar_rooms.get(room.room_id)}')
