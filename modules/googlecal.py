@@ -6,6 +6,7 @@ import pickle
 from datetime import datetime, timedelta
 import re
 import pytz
+import maya
 
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -87,12 +88,14 @@ class MatrixModule(BotModule):
         args = event.body.split()
         events = []
         calendars = self.calendar_rooms.get(room.room_id) or []
+        group_in_date = ""
 
         if len(args) == 2:
             if args[1] == 'today':
                 for calid in calendars:
                     self.logger.info(f'Listing events in cal {calid}')
                     events = events + self.list_today(calid)
+                    group_in_date = datetime.now().strftime("%a %d %b")  # force to group all events in the same day (case of events on multiple days)
             elif args[1] == 'list':
                 await bot.send_text(room, 'Calendars in this room: ' + str(self.calendar_rooms.get(room.room_id)))
                 return
@@ -151,17 +154,17 @@ class MatrixModule(BotModule):
 
         if len(events) > 0:
             self.logger.info(f'Found {len(events)} events')
-            await self.send_events(bot, events, room.room_id)
+            await self.send_events(bot, events, room.room_id, group_in_date=group_in_date)
         else:
             self.logger.info(f'No events found')
             await bot.send_text(room, 'No events found, try again later :)')
 
-    async def send_events(self, bot, events, room_id):
+    async def send_events(self, bot, events, room_id, group_in_date: str = ""):
         previous_day = None
         events_of_same_day = []
         for event in events:  # group events by day
-            start_date = self.parse_date(event['start'].get('dateTime', event['start'].get('date')))
-            current_day = datetime.strftime(start_date, '%a %d %b')
+            start_date = maya.parse(event['start'].get('dateTime', event['start'].get('date'))).datetime(to_timezone=os.environ.get('TZ'))
+            current_day = group_in_date if group_in_date != "" else datetime.strftime(start_date, '%a %d %b')
             if previous_day is None or current_day == previous_day:
                 events_of_same_day.append(event)
             else:
@@ -176,20 +179,31 @@ class MatrixModule(BotModule):
         html = f"<hr/><h2>📅 {current_day}</h2>\n"
         text = f" 📅 {current_day}\n"
         for event in events_of_same_day:
-            start_hour, end_hour = self.get_event_hours(event)
+            start_hour, end_hour = self.get_event_hours(event, current_day)
 
             img_videocall = await get_videocall_logo_from_summary(bot, event)
             html += f'<strong>{start_hour}{end_hour}</strong> <a href="{event["htmlLink"]}">{event["summary"]}</a> {img_videocall}<br/>\n'
             text += f' - {start_hour}{end_hour} \n {event["summary"]}\n\n'
         await bot.send_html_with_room_id(room_id, html, text)
 
-    def get_event_hours(self, event):
-        start_hour = "All day"
+    def get_event_hours(self, event, current_day: str):
+        start_hour = ""
         end_hour = ""
-        if event['start'].get('dateTime', event['start'].get('date')) != event['end'].get('dateTime', event['end'].get('date')):
+        start_datetime = maya.parse(event['start'].get('dateTime', event['start'].get('date'))).datetime(to_timezone=os.environ.get('TZ'))
+        end_datetime = maya.parse(event['end'].get('dateTime', event['end'].get('date'))).datetime(to_timezone=os.environ.get('TZ'))
+        current_datetime = maya.parse(current_day).datetime(to_timezone=os.environ.get('TZ'))
+        if ((start_datetime - current_datetime).days <= -1 and
+            ( (end_datetime.day - current_datetime.day) >= 1 or
+             end_datetime.hour == 23 and end_datetime.minute == 59)) or \
+           ((start_datetime - current_datetime).days < -1 and
+            start_datetime.hour == 0 and start_datetime.minute == 0 and
+                (end_datetime.day > current_datetime.day or end_datetime.hour == 23 and end_datetime.minute == 59)):
+            start_hour = "All day"
+        else:
             start_hour = self.reformat_strdate(event['start'].get('dateTime', event['start'].get('date')))
-            if start_hour != "All day":
-                end_hour = " - " + self.reformat_strdate(event['end'].get('dateTime', event['end'].get('date')))
+
+        if start_hour != "All day":
+            end_hour = " - " + self.reformat_strdate(event['end'].get('dateTime', event['end'].get('date')))
         return start_hour, end_hour
 
     def list_upcoming(self, calid):
@@ -226,14 +240,6 @@ class MatrixModule(BotModule):
         if data.get('calendar_rooms'):
             self.calendar_rooms = data['calendar_rooms']
 
-    def parse_date(self, start: str) -> datetime:
-        try:
-            dt = datetime.strptime(start, '%Y-%m-%dT%H:%M:%S%z')
-        except ValueError:
-            dt = datetime.strptime(start, '%Y-%m-%d')
-
-        return dt
-
     def reformat_strdate(self, start):
         try:
             dt = datetime.strptime(start, '%Y-%m-%dT%H:%M:%S%z')
@@ -246,16 +252,19 @@ class MatrixModule(BotModule):
             for room_id in self.calendar_rooms:
                 calendars = self.calendar_rooms.get(room_id) or []
                 for calid in calendars:
-                    start_time = datetime.utcnow()
-                    start_time = start_time + timedelta(minutes=2)
-                    events_result = self.service.events().list(calendarId=calid, timeMin=start_time.isoformat() + 'Z',
+                    now_time = datetime.utcnow()
+                    now_time = now_time + timedelta(minutes=2)
+                    events_result = self.service.events().list(calendarId=calid, timeMin=now_time.isoformat() + 'Z',
                                                                maxResults=10, singleEvents=True,
                                                                orderBy='startTime').execute()
+                    now_time = datetime.now(pytz.timezone(os.environ.get('TZ', 'UTC')))
+                    
                     for event in events_result.get('items', []):
-                        event_start_time = self.parse_date(event['start'].get('dateTime', event['start'].get('date')))
-                        if (event_start_time.tzinfo is not None and event_start_time <= start_time.replace(tzinfo=pytz.utc)) or \
-                                (event_start_time.tzinfo is None and event_start_time <= start_time):
-                            start_hour, end_hour = self.get_event_hours(event)
+                        event_start_time = maya.parse(event['start'].get('dateTime', event['start'].get('date'))).datetime(to_timezone=os.environ.get('TZ', 'UTC'))
+                        # if (event_start_time.tzinfo is not None and event_start_time <= start_time.replace(tzinfo=pytz.utc)) or \
+                        #        (event_start_time.tzinfo is None and event_start_time <= start_time):
+                        if event_start_time >= now_time and event_start_time <= now_time + timedelta(minutes=2):
+                            start_hour, end_hour = self.get_event_hours(event, datetime.strftime(now_time, '%a %d %b'))
                             html, text = self.get_html_and_text_messages(event, start_hour, end_hour)
                             await bot.send_html_with_room_id(room_id, html, text)
 
@@ -284,7 +293,7 @@ class MatrixModule(BotModule):
         if event.get('description', '').strip() != "":
             html += '<br/>----------------<br/>' + event['description']
 
-        text = f' - ** {start_hour}{end_hour}** \n {event["summary"]}\n\n'
+        text = f' - {start_hour}{end_hour} \n {event["summary"]}\n\n'
         return html, text
 
 

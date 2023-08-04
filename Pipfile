@@ -25,6 +25,7 @@ giphypop = "*"
 tzlocal = "*"
 nest_asyncio = "*"
 d20 = "*"
+maya = "*"
 
 [dev-packages]
 pylint = "*"
