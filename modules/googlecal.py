@@ -263,7 +263,7 @@ class MatrixModule(BotModule):
                         event_start_time = maya.parse(event['start'].get('dateTime', event['start'].get('date'))).datetime(to_timezone=os.environ.get('TZ', 'UTC'))
                         # if (event_start_time.tzinfo is not None and event_start_time <= start_time.replace(tzinfo=pytz.utc)) or \
                         #        (event_start_time.tzinfo is None and event_start_time <= start_time):
-                        if event_start_time >= now_time and event_start_time <= now_time + timedelta(minutes=2):
+                        if now_time <= event_start_time <= now_time + timedelta(minutes=2):
                             start_hour, end_hour = self.get_event_hours(event, datetime.strftime(now_time, '%a %d %b'))
                             html, text = self.get_html_and_text_messages(event, start_hour, end_hour)
                             await bot.send_html_with_room_id(room_id, html, text)
