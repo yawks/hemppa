@@ -184,7 +184,7 @@ class MatrixModule(BotModule):
             img_videocall = await get_videocall_logo_from_summary(bot, event)
             html += f'<strong>{start_hour}{end_hour}</strong> <a href="{event["htmlLink"]}">{event["summary"]}</a> {img_videocall}<br/>\n'
             text += f' - {start_hour}{end_hour} \n {event["summary"]}\n\n'
-        await bot.send_html_with_room_id(room_id, html, text)
+        await bot.send_html_with_room_id(room_id, html, text, msgtype="m.text")
 
     def get_event_hours(self, event, current_day: str):
         start_hour = ""
@@ -252,9 +252,9 @@ class MatrixModule(BotModule):
             for room_id in self.calendar_rooms:
                 calendars = self.calendar_rooms.get(room_id) or []
                 for calid in calendars:
-                    now_time = datetime.utcnow()
-                    now_time = now_time + timedelta(minutes=2)
-                    events_result = self.service.events().list(calendarId=calid, timeMin=now_time.isoformat() + 'Z',
+                    start_time = datetime.utcnow()
+                    start_time = start_time + timedelta(minutes=1)
+                    events_result = self.service.events().list(calendarId=calid, timeMin=start_time.isoformat() + 'Z',
                                                                maxResults=10, singleEvents=True,
                                                                orderBy='startTime').execute()
                     now_time = datetime.now(pytz.timezone(os.environ.get('TZ', 'UTC')))
@@ -266,7 +266,7 @@ class MatrixModule(BotModule):
                         if now_time <= event_start_time <= now_time + timedelta(minutes=2):
                             start_hour, end_hour = self.get_event_hours(event, datetime.strftime(now_time, '%a %d %b'))
                             html, text = self.get_html_and_text_messages(event, start_hour, end_hour)
-                            await bot.send_html_with_room_id(room_id, html, text)
+                            await bot.send_html_with_room_id(room_id, html, text, msgtype="m.text")
 
                     await self.daily_digest(room_id, calid, bot)
 
