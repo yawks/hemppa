@@ -50,9 +50,9 @@ class MatrixModule(BotModule):
             msg = ''
             modulename = args.pop(0)
             moduleobject = bot.modules.get(modulename)
-            if not moduleobject.enabled:
-                msg += f'{modulename} is disabled\n'
             try:
+                if not moduleobject.enabled:
+                    msg += f'{modulename} is disabled\n'
                 msg += moduleobject.long_help(bot=bot, room=room, event=event, args=args)
             except AttributeError:
                 msg += f'{modulename} has no help'
