@@ -5,6 +5,7 @@ import os.path
 import pickle
 from datetime import datetime, timedelta
 import re
+from typing import Tuple
 import pytz
 import maya
 
@@ -30,12 +31,13 @@ VIDEOCALL_DESC_REGEXP = [
     r"(https://teams.microsoft.com/[^>\n]*)",
 ]
 
+SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+
 
 class MatrixModule(BotModule):
     def __init__(self, name):
         super().__init__(name)
         self.credentials_file = "credentials.json"
-        self.SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
         self.bot = None
         self.service = None
         self.service_name = 'googlecal'
@@ -63,7 +65,7 @@ class MatrixModule(BotModule):
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             else:
-                flow = InstalledAppFlow.from_client_secrets_file(self.credentials_file, self.SCOPES)
+                flow = InstalledAppFlow.from_client_secrets_file(self.credentials_file, SCOPES)
                 # urn:ietf:wg:oauth:2.0:oob
                 creds = flow.run_local_server(port=0)
             # Save the credentials for the next run
@@ -75,9 +77,9 @@ class MatrixModule(BotModule):
 
         try:
             calendar_list = self.service.calendarList().list().execute()['items']
-            self.logger.info(f'Google calendar set up successfully with access to {len(calendar_list)} calendars:\n')
+            self.logger.info('Google calendar set up successfully with access to %d calendars:\n', len(calendar_list))
             for calendar in calendar_list:
-                self.logger.info(f"{calendar['summary']} - + {calendar['id']}")
+                self.logger.info('%s - + %s', calendar['summary'], calendar['id'])
         except Exception:
             self.logger.error('Getting calendar list failed!')
 
@@ -93,7 +95,7 @@ class MatrixModule(BotModule):
         if len(args) == 2:
             if args[1] == 'today':
                 for calid in calendars:
-                    self.logger.info(f'Listing events in cal {calid}')
+                    self.logger.info('Listing events in cal %s', calid)
                     events = events + self.list_today(calid)
                     group_in_date = datetime.now().strftime("%a %d %b")  # force to group all events in the same day (case of events on multiple days)
             elif args[1] == 'list':
@@ -149,14 +151,14 @@ class MatrixModule(BotModule):
 
         else:
             for calid in calendars:
-                self.logger.info(f'Listing events in cal {calid}')
+                self.logger.info('Listing events in cal %s', calid)
                 events = events + self.list_upcoming(calid)
 
         if len(events) > 0:
-            self.logger.info(f'Found {len(events)} events')
+            self.logger.info('Found %d events', len(events))
             await self.send_events(bot, events, room.room_id, group_in_date=group_in_date)
         else:
-            self.logger.info(f'No events found')
+            self.logger.info('No events found')
             await bot.send_text(room, 'No events found, try again later :)')
 
     async def send_events(self, bot, events, room_id, group_in_date: str = ""):
@@ -181,8 +183,8 @@ class MatrixModule(BotModule):
         for event in events_of_same_day:
             start_hour, end_hour = self.get_event_hours(event, current_day)
 
-            img_videocall = await get_videocall_logo_from_summary(bot, event)
-            html += f'<strong>{start_hour}{end_hour}</strong> <a href="{event["htmlLink"]}">{event["summary"]}</a> {img_videocall}<br/>\n'
+            img_videocall, evt_url = await self._get_videocall_url_and_logo_from_summary(bot, event)
+            html += f'<strong>{start_hour}{end_hour}</strong> <a href="{evt_url}">{event["summary"]}</a> {img_videocall}<br/>\n'
             text += f' - {start_hour}{end_hour} \n {event["summary"]}\n\n'
         await bot.send_html_with_room_id(room_id, html, text, msgtype="m.text")
 
@@ -193,7 +195,7 @@ class MatrixModule(BotModule):
         end_datetime = maya.parse(event['end'].get('dateTime', event['end'].get('date'))).datetime(to_timezone=os.environ.get('TZ'))
         current_datetime = maya.parse(current_day).datetime(to_timezone=os.environ.get('TZ'))
         if ((start_datetime - current_datetime).days <= -1 and
-            ( (end_datetime.day - current_datetime.day) >= 1 or
+            ((end_datetime.day - current_datetime.day) >= 1 or
              end_datetime.hour == 23 and end_datetime.minute == 59)) or \
            ((start_datetime - current_datetime).days < -1 and
             start_datetime.hour == 0 and start_datetime.minute == 0 and
@@ -228,7 +230,20 @@ class MatrixModule(BotModule):
         return events_result.get('items', [])
 
     def help(self):
-        return 'Google calendar. Lists 10 next events by default. today = list today\'s events.'
+        return 'Google calendar. Lists 10 next events by default. today = list today\'s events. (Available commands: today, list, listavailable, add, del)'
+
+    def long_help(self, bot=None, event=None, **kwargs):
+        text = self.help() + (
+            '\n- "!googlecal list": list calendars associated to current room'
+            '\n- "!googlecal listavailable": list available calendars for current room (omit already associated)'
+            '\n- "!googlecal today": list today events for every associated calendars')
+        if bot and event and bot.is_owner(event):
+            text += (
+                '\n- "!googlecal add <calendar name>": associate the calendar to the room'
+                '\n- "!googlecal del <calendar name>": de-associate the calendar to the room'
+            )
+        text += '\n\n Every day at 7:30am the bot will send a digest with all today events for all rooms having associated calendars'
+        return text
 
     def get_settings(self):
         data = super().get_settings()
@@ -258,7 +273,7 @@ class MatrixModule(BotModule):
                                                                maxResults=10, singleEvents=True,
                                                                orderBy='startTime').execute()
                     now_time = datetime.now(pytz.timezone(os.environ.get('TZ', 'UTC')))
-                    
+
                     for event in events_result.get('items', []):
                         event_start_time = maya.parse(event['start'].get('dateTime', event['start'].get('date'))).datetime(to_timezone=os.environ.get('TZ', 'UTC'))
                         if now_time <= event_start_time <= now_time + timedelta(minutes=1):
@@ -295,27 +310,30 @@ class MatrixModule(BotModule):
         return html, text
 
 
-async def get_videocall_logo_from_summary(bot, event) -> str:
-    img_html = ''
-    url = event.get('conferenceData', {}).get(
-        'entryPoints', [{}])[0].get('uri', '')
-    if url == '':
-        for reg in VIDEOCALL_DESC_REGEXP:
-            match = re.search(reg, event.get('description', ''))
-            if match:
-                url = match.groups()[0]
-                break
+    async def _get_videocall_url_and_logo_from_summary(self, bot, event) -> Tuple[str, str]:
+        img_html = ''
+        url = event.get('conferenceData', {}).get(
+            'entryPoints', [{}])[0].get('uri', '')
+        if url == '':
+            for reg in VIDEOCALL_DESC_REGEXP:
+                match = re.search(reg, event.get('description', ''))
+                if match:
+                    url = match.groups()[0]
+                    break
 
-    matrix_uri = ''
-    try:
-        if url.find('meet.google.com') > -1:
-            matrix_uri, _, _, _, _ = await bot.upload_image('https://upload.wikimedia.org/wikipedia/commons/thumb/9/9b/Google_Meet_icon_%282020%29.svg/12px-Google_Meet_icon_%282020%29.svg.png?20221213135236', blob_content_type="image/png")
-        elif url.find('teams.microsoft.com') > -1:
-            matrix_uri, _, _, _, _ = await bot.upload_image('https://upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Microsoft_Office_Teams_%282018%E2%80%93present%29.svg/12px-Microsoft_Office_Teams_%282018%E2%80%93present%29.svg.png?20210603103011', blob_content_type="image/png")
-    except (UploadFailed, TypeError, ValueError):
-        print(f"Something went wrong uploading meet logo.")
+        matrix_uri = ''
+        try:
+            if url.find('meet.google.com') > -1:
+                matrix_uri, _, _, _, _ = await bot.upload_image('https://upload.wikimedia.org/wikipedia/commons/thumb/9/9b/Google_Meet_icon_%282020%29.svg/12px-Google_Meet_icon_%282020%29.svg.png?20221213135236', blob_content_type="image/png")
+            elif url.find('teams.microsoft.com') > -1:
+                matrix_uri, _, _, _, _ = await bot.upload_image('https://upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Microsoft_Office_Teams_%282018%E2%80%93present%29.svg/12px-Microsoft_Office_Teams_%282018%E2%80%93present%29.svg.png?20210603103011', blob_content_type="image/png")
+        except (UploadFailed, TypeError, ValueError):
+            self.logger.error('Something went wrong uploading meet logo.')
 
-    if matrix_uri != '':
-        img_html = f'<img src="{matrix_uri}"/>'
+        if matrix_uri != '':
+            img_html = f'<img src="{matrix_uri}"/>'
+        else:
+            # if no video call url found, get the general html link
+            url = event['htmlLink']
 
-    return img_html
+        return img_html, url
