@@ -1,5 +1,4 @@
 from __future__ import print_function
-from curses.ascii import isdigit
 from typing import Dict, List, Optional, Tuple
 import os.path
 from datetime import datetime
@@ -118,7 +117,7 @@ class MatrixModule(BotModule):
         await self.cmd_list(bot, room, tasklist_names, datetime.now(), display_tasklist_if_empty)
 
     async def cmd_show_task_by_index(self, bot, room: MatrixRoom, index: str):
-        if isdigit(index):
+        if index.isdigit():
             if room.room_id in self.tasks_per_room:
                 if int(index) <= len(self.tasks_per_room[room.room_id]):
                     html, text = self.tasks_per_room[room.room_id][int(index)-1].get_html_and_text_full_description()

@@ -19,6 +19,7 @@ tzlocal = "*"
 nest_asyncio = "*"
 maya = "*"
 deepl = "*"
+timeago = "*"
 
 [dev-packages]
 pylint = "*"
