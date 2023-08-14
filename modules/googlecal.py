@@ -12,6 +12,7 @@ import maya
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from nio import MatrixRoom
 from modules.common.module import BotModule
 from modules.common.exceptions import UploadFailed
 #
@@ -32,6 +33,8 @@ VIDEOCALL_DESC_REGEXP = [
 ]
 
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+
+ALL_DAY = 'All day'
 
 
 class MatrixModule(BotModule):
@@ -161,7 +164,7 @@ class MatrixModule(BotModule):
             self.logger.info('No events found')
             await bot.send_text(room, 'No events found, try again later :)')
 
-    async def send_events(self, bot, events, room_id, group_in_date: str = ""):
+    async def send_events(self, bot, events, room: MatrixRoom, group_in_date: str = ""):
         previous_day = None
         events_of_same_day = []
         for event in events:  # group events by day
@@ -170,14 +173,14 @@ class MatrixModule(BotModule):
             if previous_day is None or current_day == previous_day:
                 events_of_same_day.append(event)
             else:
-                await self.send_html_same_day_events(bot, room_id, events_of_same_day, previous_day)
+                await self.send_html_same_day_events(bot, room, events_of_same_day, previous_day)
                 events_of_same_day = []
 
             previous_day = current_day
 
-        await self.send_html_same_day_events(bot, room_id, events_of_same_day, previous_day)
+        await self.send_html_same_day_events(bot, room, events_of_same_day, previous_day)
 
-    async def send_html_same_day_events(self, bot, room_id, events_of_same_day, current_day):
+    async def send_html_same_day_events(self, bot, room: MatrixRoom, events_of_same_day, current_day):
         html = f"<hr/><h2>📅 {current_day}</h2>\n"
         text = f" 📅 {current_day}\n"
         for event in events_of_same_day:
@@ -186,7 +189,7 @@ class MatrixModule(BotModule):
             img_videocall, evt_url = await self._get_videocall_url_and_logo_from_summary(bot, event)
             html += f'<strong>{start_hour}{end_hour}</strong> <a href="{evt_url}">{event["summary"]}</a> {img_videocall}<br/>\n'
             text += f' - {start_hour}{end_hour} \n {event["summary"]}\n\n'
-        await bot.send_html_with_room_id(room_id, html, text, msgtype="m.text")
+        await bot.send_html(room, html, text, msgtype="m.text")
 
     def get_event_hours(self, event, current_day: str):
         start_hour = ""
@@ -200,12 +203,12 @@ class MatrixModule(BotModule):
            ((start_datetime - current_datetime).days < -1 and
             start_datetime.hour == 0 and start_datetime.minute == 0 and
                 (end_datetime.day > current_datetime.day or end_datetime.hour == 23 and end_datetime.minute == 59)):
-            start_hour = "All day"
+            start_hour = ALL_DAY
         else:
             start_hour = self.reformat_strdate(event['start'].get('dateTime', event['start'].get('date')))
 
-        if start_hour != "All day":
-            end_hour = " - " + self.reformat_strdate(event['end'].get('dateTime', event['end'].get('date')))
+        if start_hour != ALL_DAY:
+            end_hour = ' - ' + self.reformat_strdate(event['end'].get('dateTime', event['end'].get('date')))
         return start_hour, end_hour
 
     def list_upcoming(self, calid):
@@ -260,36 +263,42 @@ class MatrixModule(BotModule):
             dt = datetime.strptime(start, '%Y-%m-%dT%H:%M:%S%z')
             return dt.strftime("%H:%M")
         except ValueError:
-            return "All day"
+            return ALL_DAY
 
     async def matrix_poll(self, bot, pollcount):
         if pollcount % 6 == 0:  # every minute
             for room_id in self.calendar_rooms:
+                room = MatrixRoom(room_id=room_id, own_user_id="")
                 calendars = self.calendar_rooms.get(room_id) or []
                 for calid in calendars:
-                    start_time = datetime.utcnow()
-                    start_time = start_time + timedelta(minutes=1)
-                    events_result = self.service.events().list(calendarId=calid, timeMin=start_time.isoformat() + 'Z',
+                    await self.send_message_for_upcoming_event(bot, room, calid)
+                    await self.daily_digest(room, calid, bot)
+
+    async def send_message_for_upcoming_event(self, bot, room, calid):
+        """
+        If one or many event(s) is(are) about start (in 1 minute from the call of this function), a reminder message is sent in the room.
+        """
+        start_time = datetime.utcnow()
+        start_time = start_time + timedelta(minutes=1)
+        events_result = self.service.events().list(calendarId=calid, timeMin=start_time.isoformat() + 'Z',
                                                                maxResults=10, singleEvents=True,
                                                                orderBy='startTime').execute()
-                    now_time = datetime.now(pytz.timezone(os.environ.get('TZ', 'UTC')))
+        now_time = datetime.now(pytz.timezone(os.environ.get('TZ', 'UTC')))
 
-                    for event in events_result.get('items', []):
-                        event_start_time = maya.parse(event['start'].get('dateTime', event['start'].get('date'))).datetime(to_timezone=os.environ.get('TZ', 'UTC'))
-                        if now_time <= event_start_time <= now_time + timedelta(minutes=1):
-                            start_hour, end_hour = self.get_event_hours(event, datetime.strftime(now_time, '%a %d %b'))
-                            html, text = self.get_html_and_text_messages(event, start_hour, end_hour)
-                            await bot.send_html_with_room_id(room_id, html, text, msgtype="m.text")
+        for event in events_result.get('items', []):
+            event_start_time = maya.parse(event['start'].get('dateTime', event['start'].get('date'))).datetime(to_timezone=os.environ.get('TZ', 'UTC'))
+            if now_time <= event_start_time <= now_time + timedelta(minutes=1):
+                start_hour, end_hour = self.get_event_hours(event, datetime.strftime(now_time, '%a %d %b'))
+                html, text = self.get_html_and_text_messages(event, start_hour, end_hour)
+                await bot.send_html(room, html, text, msgtype="m.text")
 
-                    await self.daily_digest(room_id, calid, bot)
-
-    async def daily_digest(self, room_id, calid, bot):
+    async def daily_digest(self, room: MatrixRoom, calid: str, bot):
         """
         Display today events at 7:30am except during weekends
         """
         now = datetime.now()
         if now.weekday() not in [5, 6] and now.hour == 7 and now.minute == 30:
-            await self.send_events(bot, self.list_today(calid), room_id)
+            await self.send_events(bot, self.list_today(calid), room)
 
     def get_html_and_text_messages(self, event, start_hour, end_hour):
         html = f'<hr/>📣 <i>1 minute until this event:</i><br/><strong>{start_hour}{end_hour} <a href="{event["htmlLink"]}">{event["summary"]}</a></strong><br/>\n'
@@ -308,7 +317,6 @@ class MatrixModule(BotModule):
 
         text = f' - {start_hour}{end_hour} \n {event["summary"]}\n\n'
         return html, text
-
 
     async def _get_videocall_url_and_logo_from_summary(self, bot, event) -> Tuple[str, str]:
         img_html = ''
