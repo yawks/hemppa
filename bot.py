@@ -203,9 +203,6 @@ class Bot:
         return await self.room_send(room.room_id, event, 'm.room.message', msg)
 
     async def send_html(self, room, html, plaintext, event=None, msgtype="m.notice", bot_ignore=False):
-        await self.send_html_with_room_id(room.room_id, html, plaintext, event=event, msgtype=msgtype, bot_ignore=bot_ignore)
-
-    async def send_html_with_room_id(self, room_id, html, plaintext, event=None, msgtype="m.notice", bot_ignore=False):
         """
 
         :param room: A MatrixRoom the html should be send to
@@ -224,7 +221,7 @@ class Bot:
         }
         if bot_ignore:
             msg["org.vranki.hemppa.ignore"] = "true"
-        await self.room_send(room_id, event, 'm.room.message', msg)
+        await self.room_send(room.room_id, event, 'm.room.message', msg)
 
     async def send_location(self, room, body, latitude, longitude, event=None, bot_ignore=False, asset='m.pin'):
         """
