@@ -1,15 +1,15 @@
 from __future__ import print_function
+from curses.ascii import isdigit
 from typing import Dict, List, Optional, Tuple
 import os.path
-import timeago
 from datetime import datetime
+import timeago
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from modules.common.module import BotModule
-from modules.common.exceptions import UploadFailed
 #
 # Google task notifications
 #
@@ -23,14 +23,29 @@ class MatrixModule(BotModule):
     def __init__(self, name):
         super().__init__(name)
         self.service_name = 'googletasks'
+        self.credentials_file = "credentials.json"
         self.tasklists_rooms = {}
         self.enabled = True
-        #self.service = None
+        self.service = None
         self.poll_interval_min = 1
 
     def matrix_start(self, bot):
         super().matrix_start(bot)
-        self.add_module_aliases(bot, ['newname', 'anothername'])
+
+        if not os.path.exists(self.credentials_file) or os.path.getsize(self.credentials_file) == 0:
+            return  # No-op if not set up
+
+        creds = _get_credentials()
+        self.service = build('tasks', 'v1', credentials=creds)
+
+        try:
+            results = self.service.tasklists().list().execute()
+            tasklists = results.get('items', [])
+            if tasklists:
+                for tasklist in tasklists:
+                    self.logger.info("%s - %s", {tasklist['title']}, {tasklist['id']})
+        except Exception:
+            self.logger.error('Getting tasklist list failed!')
 
     def get_settings(self):
         data = super().get_settings()
@@ -44,56 +59,187 @@ class MatrixModule(BotModule):
 
     async def matrix_message(self, bot, room, event):
         if not self.service:
-            await bot.send_text(room, 'Google calendar not set up for this bot.')
+            await bot.send_text(room, 'Google tasklist not set up for this bot.')
             return
         args = event.body.split()
-        events = []
         tasklists = self.tasklists_rooms.get(room.room_id) or []
-        
+
         if len(args) == 2:
             if args[1] == 'today':
-                for tasklistid in tasklists:
-                    self.logger.info(f'Listing events in tasklist {tasklistid}')
-                    events = events + self.list_today(tasklistid)
-                    group_in_date = datetime.now().strftime("%a %d %b")  # force to group all events in the same day (case of events on multiple days)
+                await self.cmd_list_today(bot, room, tasklists)
             elif args[1] == 'list':
-                await bot.send_text(room, 'Calendars in this room: ' + str(self.calendar_rooms.get(room.room_id)))
-                return
+                await bot.send_text(room, 'Tasklists in this room: ' + str(self.tasklists_rooms.get(room.room_id)))
             elif args[1] == 'listavailable':
-                calendar_list = self.service.calendarList().list().execute()['items']
-                tasklists = 'Available calendars: \n'
-                for calendar in calendar_list:
-                    if calendar['summary'] not in self.calendar_rooms.get(room.room_id, []):
-                        tasklists += f" - {calendar['summary']}\n"
-                await bot.send_text(room, tasklists)
-                return
-
-        elif len(args) == 3:
+                await self.cmd_listavailable(bot, room)
+        elif len(args) >= 3:
             if args[1] == 'add':
-                bot.must_be_admin(room, event)
+                await self.cmd_add_tasklist_to_room(bot, room, event, ' '.join(args[2:]))
+            elif args[1] == 'del':
+                await self.cmd_del_tasklist_from_room(bot, room, event, ' '.join(args[2:]))
+            elif args[1] == 'show':
+                await self.cmd_show_task_by_id(bot, room, event, args[2])
+            else:
+                await bot.send_text(room, 'Unknown command')
+        else:
+            for tasklist_name in tasklists:
+                self.logger.info('Listing tasks in tasklist %s', tasklist_name)
+                await self.send_tasks(bot, tasklist_name, room.room_id)
 
-                tasklistid = args[2]
-                self.logger.info(f'Adding calendar {tasklistid} to room id {room.room_id}')
+    async def cmd_list_today(self, bot, room, tasklists):
+        for tasklist_name in tasklists:
+            self.logger.info('Listing events in tasklist %s', tasklist_name)
+            now = datetime.now()
+            await self.send_tasks(bot, tasklist_name, room.room_id, datetime(now.year, now.month, now.day, 23, 59, 59))
 
-                if self.calendar_rooms.get(room.room_id):
-                    if tasklistid not in self.calendar_rooms[room.room_id]:
-                        self.calendar_rooms[room.room_id].append(tasklistid)
-                    else:
-                        await bot.send_text(room, 'This google calendar already added in this room!')
-                        return
-                else:
-                    self.calendar_rooms[room.room_id] = [tasklistid]
+    async def cmd_show_task_by_id(self, bot, room, event,  task_id: str):
+        pass
 
-                self.logger.info(f'Calendars now for this room {self.calendar_rooms.get(room.room_id)}')
+    async def cmd_del_tasklist_from_room(self, bot, room, event, tasklist_name):
+        bot.must_be_admin(room, event)
 
-                bot.save_settings()
+        self.logger.info('Removing calendar %s from room id %s', tasklist_name, room.room_id)
 
-                await bot.send_text(room, 'Added new google calendar to this room')
+        if self.tasklists_rooms.get(room.room_id) and tasklist_name in self.tasklists_rooms[room.room_id]:
+            self.tasklists_rooms[room.room_id].remove(tasklist_name)
+
+        self.logger.info('Tasklists now for this room %s', self.tasklists_rooms.get(room.room_id))
+
+        bot.save_settings()
+
+        await bot.send_text(room, 'Removed google tasklist from this room')
+
+    async def cmd_add_tasklist_to_room(self, bot, room, event, tasklist_name: str):
+        bot.must_be_admin(room, event)
+
+        self.logger.info('Adding tasklist %s to room id %s', tasklist_name, room.room_id)
+
+        if self.tasklists_rooms.get(room.room_id):
+            if tasklist_name not in self.tasklists_rooms[room.room_id]:
+                self.tasklists_rooms[room.room_id].append(tasklist_name)
+            else:
+                await bot.send_text(room, 'This google tasklist already added in this room!')
                 return
+        else:
+            self.tasklists_rooms[room.room_id] = [tasklist_name]
+
+        self.logger.info('Tasklist now for this room %s', self.tasklists_rooms.get(room.room_id))
+
+        bot.save_settings()
+
+        await bot.send_text(room, 'Added new google tasklist to this room')
+
+    async def cmd_listavailable(self, bot, room):
+        tasklist_list = self.service.tasklists().list().execute()['items']
+        tasklists = 'Available tasklists: \n'
+        for tasklist in tasklist_list:
+            if tasklist['title'] not in self.tasklists_rooms.get(room.room_id, []):
+                tasklists += f" - {tasklist['title']}\n"
+        await bot.send_text(room, tasklists)
+
+    def _get_tasks_for_tasklist_and_date(self, tasklist_name: str, until_date: Optional[datetime]) -> List["GoogleTask"]:
+        """
+        return tasks for given task list
+        in case of until_date is defined, only tasks having a due date older or same as until_date are returned
+        """
+        tasks: List[GoogleTask] = []
+        tasklist: Optional["GoogleTasksList"] = self._get_tasklist_by_title(tasklist_name)
+        if tasklist is not None:
+            for task in tasklist.google_tasks.values():
+                if until_date is None or (task.due is not None and task.due <= until_date):
+                    tasks.append(task)
+
+            for orphan in tasklist.orphans:  # add orphans removing parent link
+                if until_date is None or (orphan.due is not None and orphan.due <= until_date):
+                    tasks.append(orphan)
+
+        return tasks
+
+    async def send_tasks(self, bot, tasklist_name: str, room_id, until_date: Optional[datetime] = None):
+        tasklist: Optional["GoogleTasksList"] = self._get_tasklist_by_title(tasklist_name)
+        if tasklist is not None:
+            html, text = tasklist.to_html_and_text(until_date)
+            await bot.send_html_with_room_id(room_id, html, text)
+        else:
+            await bot.send_html_with_room_id(room_id, f'No task for <i>{tasklist_name}</i>', f'No task for {tasklist_name}')
 
     async def matrix_poll(self, bot, pollcount):
         if pollcount % 6 == 0:  # every minute
             pass
+
+    def _get_tasklist_by_title(self, tasklist_title: str, completed: bool = False) -> Optional["GoogleTasksList"]:
+        google_tasklist: Optional[GoogleTasksList] = None
+        try:
+            gtasklist_json = self.service.tasklists().list().execute()
+            for item in gtasklist_json["items"]:
+                if item.get("title", "") == tasklist_title:
+                    google_tasklist = GoogleTasksList(item["id"], item["title"])
+
+                    gtasks_json = self.service.tasks().list(
+                        tasklist=item["id"], showCompleted=completed, showDeleted=False, showHidden=False).execute()
+
+                    tasks_items = gtasks_json["items"]
+                    for task in tasks_items:
+                        task["dt"] = "99991231"
+                        if "due" in task:
+                            task["dt"] = datetime.strptime(
+                                task["due"], "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%Y%m%d")
+
+                    tasks_items = sorted(tasks_items, key=lambda x: x["dt"])
+                    for task in tasks_items:
+                        if completed ^ (task.get("status", "") != "completed"):
+                            gtask = GoogleTask(
+                                task_id=task["id"],
+                                title=task.get("title", ""),
+                                notes=task.get("notes", ""),
+                                parent_id=task.get("parent", ""),
+                                due=task.get("due", ""),
+                                completed=completed,
+                                tasklist=google_tasklist,
+                                tasklist_id=item["id"])
+
+                            additional_link = _get_additional_link_from_notes(task)
+                            if additional_link is not None:
+                                gtask.add_link(
+                                    additional_link["link"], additional_link["description"], additional_link["type"])
+                            for link in task.get("links", []):
+                                gtask.add_link(link.get("link", ""), link.get(
+                                    "description", ""), link.get("type", ""))
+                            google_tasklist.append_task(gtask)
+
+                    break
+
+        except HttpError as err:
+            self.logger.error(err)
+
+        return google_tasklist
+
+    def _get_tasklist(self, tasklist_id: str) -> Optional["GoogleTasksList"]:
+        tasklist: Optional[GoogleTasksList] = None
+        try:
+            tasklist_json = self.service.tasklists().get(tasklist=tasklist_id).execute()
+            tasklist = GoogleTasksList(
+                tasklist_json["id"], tasklist_json.get("title", ""))
+
+        except HttpError as err:
+            self.logger.error(err)
+
+        return tasklist
+
+    def help(self):
+        return 'Google tasklist. Lists 10 next tasks by default. today = list today\'s tasks. (Available commands: today, list, listavailable, add, del)'
+
+    def long_help(self, bot=None, event=None, **kwargs):
+        text = self.help() + (
+            '\n- "!googletask list": list tasklists associated to current room'
+            '\n- "!googletask listavailable": list available tasklists for current room (omit already associated)'
+            '\n- "!googletask today": list today tasks for every associated tasklist')
+        if bot and event and bot.is_owner(event):
+            text += (
+                '\n- "!googletask add <tasklist name>": associate the tasklist to the room'
+                '\n- "!googletask del <tasklist name>": de-associate the tasklist to the room'
+            )
+        text += '\n\n Every day at 7:30am the bot will send a digest with due for today tasks and overdue tasks for all rooms having associated tasklists'
+        return text
 
 
 class GoogleTasksList:
@@ -117,21 +263,32 @@ class GoogleTasksList:
                     google_task.append_subtask(task)
                     self.orphans.remove(task)
 
-    def to_html(self) -> str:
-        html: str = ""
-        cpt = 1
+    def to_html_and_text(self, until_date: Optional[datetime] = None) -> Tuple[str, str]:
+        """
+        Get html and text output for non completed tasks due until date if defined (otherwise all non completed tasks)
+        If task has no due date defined and until_date is defined, they will be ignored.
+        """
+        text = f"{self.name}\n"
+        html = f"<hr/><h2>{self.name}</h2>\n"
+        cpt = 0
         for google_task in self.google_tasks.values():
-            task_html, cpt = google_task.to_html(cpt)
-            html += task_html + "\n"
-            cpt += 1
+            if until_date is None or (google_task.due is not None and google_task.due <= until_date):
+                cpt += 1
+                task_html, task_text = google_task.to_html_and_text()
+                html += task_html + "\n <br/>"
+                text += task_text + "\n"
 
         for orphan in self.orphans:  # add orphans removing parent link
-            orphan.parent_id = ""
-            task_html, cpt = orphan.to_html(cpt)
-            html += task_html + "\n"
-            cpt += 1
+            if until_date is None or (orphan.due is not None and orphan.due <= until_date):
+                cpt += 1
+                orphan.parent_id = ""
+                task_html, task_text = orphan.to_html_and_text()
+                html += task_html + "\n<br/>"
 
-        return html
+        if cpt == 0:
+            html = text = "No task!"
+
+        return html, text
 
     def get_open_tasks(self) -> int:
         nb_open_tasks = len(self.orphans)
@@ -179,15 +336,20 @@ class GoogleTask():
     def append_subtask(self, google_task: "GoogleTask"):
         self.sub_tasks.append(google_task)
 
-    def to_html(self, cpt: int, deep: int = 0) -> Tuple[str, int]:
+    def to_html_and_text(self, deep: int = 0) -> Tuple[str, str]:
         html: str = ""
+        text: str = ""
         favorite = "" if not self.favorite else "⭐ "
-        subtitle = ""
+        html_subtitle = ""
+        text_subtitle = ""
         urgentness = ""
-        mrkdwn = " " if not self.completed else "~"
-
+        html_title = self.title
+        text_title = self.title
         if self.completed:
+            html_title = f"<s>{self.title}</s>"
+            text_title += " (completed)"
             urgentness = "⚫ "
+
         else:
             urgentness = "⚪ "
             if self.due is not None:
@@ -196,20 +358,25 @@ class GoogleTask():
                         urgentness = "🔴 "
                     elif self.due.day <= datetime.now().day + 3 and self.due.month == datetime.now().month and self.due.year == datetime.now().year:
                         urgentness = "🟠 "
-                subtitle = "️ _due " + get_timeago(self.due) + "_"
+                html_subtitle = "️ <i>due " + get_timeago(self.due) + "</i>"
+                text_subtitle = "️ (due " + get_timeago(self.due) + ")"
 
         for link in self.links:
-            subtitle += f"\n         _{link.link_type} <{link.link}|{link.decription}>_"
+            html_subtitle += f'\n<br/>         <i>{link.link_type} <a href="{link.link}">{link.decription}</a></i>'
+            text_subtitle += f'\n         {link.link_type} {link.decription} {link.link}'
 
-        html = str(cpt) + " - " + (" " * deep + "└ " if self.parent_id !=
-                                   "" else "") + urgentness + favorite + f"{mrkdwn}{self.title}{mrkdwn}" + subtitle
+        html = (" " * deep + "└ " if self.parent_id !=
+                "" else "") + urgentness + favorite + " " + html_title + html_subtitle + '<br/><i><small>' + self.task_id + '</small></i>'
+
+        text = (" " * deep + "└ " if self.parent_id !=
+                "" else "") + urgentness + favorite + " " + text_title + text_subtitle + '\n' + self.task_id
 
         for sub_task in self.sub_tasks:
-            cpt += 1
-            sub_html, cpt = sub_task.to_html(cpt, deep+1)
-            html += "\n" + sub_html
+            sub_html, sub_text = sub_task.to_html_and_text(deep+1)
+            html += "\n<br/>" + sub_html
+            text += "\n" + sub_text
 
-        return html, cpt
+        return html, text
 
     def get_nb_open_tasks(self) -> int:
         nb_open_tasks = 1
@@ -239,58 +406,6 @@ def _get_credentials():
             token.write(creds.to_json())
 
     return creds
-
-
-def get_tasklists(completed=False) -> List[GoogleTasksList]:
-    tasks_lists: List[GoogleTasksList] = []
-
-    creds = _get_credentials()
-
-    try:
-        service = build('tasks', 'v1', credentials=creds)
-        results = service.tasklists().list(maxResults=10).execute()
-        items = results.get('items', [])
-
-        if items:
-            for item in items:
-                gtasks_json = service.tasks().list(
-                    tasklist=item["id"], showCompleted=completed, showDeleted=False, showHidden=False).execute()
-                google_task_list: GoogleTasksList = GoogleTasksList(item["id"],
-                                                                    item["title"])
-                tasks_lists.append(google_task_list)
-                items = gtasks_json["items"]
-                for task in items:
-                    task["dt"] = "99991231"
-                    if "due" in task:
-                        task["dt"] = datetime.strptime(
-                            task["due"], "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%Y%m%d")
-
-                items = sorted(items, key=lambda x: x["dt"])
-                for task in items:
-                    if completed ^ (task.get("status", "") != "completed"):
-                        gtask = GoogleTask(
-                            task_id=task["id"],
-                            title=task.get("title", ""),
-                            notes=task.get("notes", ""),
-                            parent_id=task.get("parent", ""),
-                            due=task.get("due", ""),
-                            completed=completed,
-                            tasklist=google_task_list,
-                            tasklist_id=item["id"])
-
-                        additional_link = _get_additional_link_from_notes(task)
-                        if additional_link is not None:
-                            gtask.add_link(
-                                additional_link["link"], additional_link["description"], additional_link["type"])
-                        for link in task.get("links", []):
-                            gtask.add_link(link.get("link", ""), link.get(
-                                "description", ""), link.get("type", ""))
-                        google_task_list.append_task(gtask)
-
-    except HttpError as err:
-        print(err)
-    finally:
-        return tasks_lists
 
 
 def toggle_task_completion(tasklist_id: str, task_id: str) -> bool:
@@ -426,38 +541,6 @@ def delete_task(tasklist_id: str, task_id: str) -> bool:
     return completed
 
 
-def get_tasklist_by_title(tasklist_title: str) -> Optional[GoogleTasksList]:
-    creds = _get_credentials()
-    google_tasklist: Optional[GoogleTasksList] = None
-    try:
-        service = build('tasks', 'v1', credentials=creds)
-        items = service.tasklists().list().execute()
-        for item in items["items"]:
-            if item.get("title", "") == tasklist_title:
-                google_tasklist = GoogleTasksList(item["id"], item["title"])
-                break
-
-    except HttpError as err:
-        print(err)
-
-    return google_tasklist
-
-
-def get_tasklist(tasklist_id: str) -> Optional[GoogleTasksList]:
-    tasklist: Optional[GoogleTasksList] = None
-    creds = _get_credentials()
-    try:
-        service = build('tasks', 'v1', credentials=creds)
-        tasklist_json = service.tasklists().get(tasklist=tasklist_id).execute()
-        tasklist = GoogleTasksList(
-            tasklist_json["id"], tasklist_json.get("title", ""))
-
-    except HttpError as err:
-        print(err)
-
-    return tasklist
-
-
 def create_tasklist(tasklistname: str):
     creds = _get_credentials()
     try:
@@ -482,8 +565,3 @@ def get_timeago(dt: datetime) -> str:
         str_timeago = timeago.format(dt)
 
     return str_timeago
-
-
-if __name__ == "__main__":
-    for task_list in get_tasklists():
-        print(task_list.to_html())
