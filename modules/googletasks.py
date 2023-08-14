@@ -9,6 +9,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from nio import MatrixRoom
 from modules.common.module import BotModule
 #
 # Google task notifications
@@ -28,6 +29,9 @@ class MatrixModule(BotModule):
         self.enabled = True
         self.service = None
         self.poll_interval_min = 1
+
+        # contains last given tasks for a room in order to easily pick them by number instead of their long ids
+        self.tasks_per_room: Dict[str, List["GoogleTask"]] = {}
 
     def matrix_start(self, bot):
         super().matrix_start(bot)
@@ -62,11 +66,11 @@ class MatrixModule(BotModule):
             await bot.send_text(room, 'Google tasklist not set up for this bot.')
             return
         args = event.body.split()
-        tasklists = self.tasklists_rooms.get(room.room_id) or []
+        tasklist_names = self.tasklists_rooms.get(room.room_id) or []
 
         if len(args) == 2:
             if args[1] == 'today':
-                await self.cmd_list_today(bot, room, tasklists)
+                await self.cmd_list_today(bot, room, tasklist_names, display_tasklist_if_empty=True)
             elif args[1] == 'list':
                 await bot.send_text(room, 'Tasklists in this room: ' + str(self.tasklists_rooms.get(room.room_id)))
             elif args[1] == 'listavailable':
@@ -77,22 +81,54 @@ class MatrixModule(BotModule):
             elif args[1] == 'del':
                 await self.cmd_del_tasklist_from_room(bot, room, event, ' '.join(args[2:]))
             elif args[1] == 'show':
-                await self.cmd_show_task_by_id(bot, room, event, args[2])
+                await self.cmd_show_task_by_index(bot, room, args[2])
             else:
                 await bot.send_text(room, 'Unknown command')
         else:
-            for tasklist_name in tasklists:
-                self.logger.info('Listing tasks in tasklist %s', tasklist_name)
-                await self.send_tasks(bot, tasklist_name, room.room_id)
+            await self.cmd_list(bot, room, tasklist_names, None)
 
-    async def cmd_list_today(self, bot, room, tasklists):
-        for tasklist_name in tasklists:
-            self.logger.info('Listing events in tasklist %s', tasklist_name)
-            now = datetime.now()
-            await self.send_tasks(bot, tasklist_name, room.room_id, datetime(now.year, now.month, now.day, 23, 59, 59))
+    async def cmd_list(self, bot, room, tasklist_names: List[str], until_date: Optional[datetime], display_tasklist_if_empty: bool):
+        html = ''
+        text = ''
+        for tasklist_name in tasklist_names:
+            cpt = 1
+            self.logger.info('Listing tasks in tasklist "%s"', tasklist_name)
+            tasklist_html = f'<h4>{tasklist_name}</h4>\n'
+            tasklist_text = f'{tasklist_name}\n'
+            self.tasks_per_room[room.room_id] = []
+            for task in self._get_tasks_for_tasklist_and_date(tasklist_name, until_date):
+                self.tasks_per_room[room.room_id].append(task)
+                task_html, task_text = task.get_html_and_text_summary()
+                tasklist_html += f'{cpt} - {task_html}'
+                tasklist_text += f'{cpt} - {task_text}'
 
-    async def cmd_show_task_by_id(self, bot, room, event,  task_id: str):
-        pass
+                cpt += 1
+
+            if cpt == 1:
+                tasklist_html += 'Nothing to do! 😙'
+                tasklist_text += 'Nothing to do! 😙'
+            if cpt > 1 or display_tasklist_if_empty:
+                html += tasklist_html
+                text += tasklist_text
+
+        if html != '':
+            await bot.send_html(room, html, text)
+
+    async def cmd_list_today(self, bot, room, tasklist_names: List[str], display_tasklist_if_empty: bool):
+        await self.cmd_list(bot, room, tasklist_names, datetime.now(), display_tasklist_if_empty)
+
+    async def cmd_show_task_by_index(self, bot, room: MatrixRoom, index: str):
+        if isdigit(index):
+            if room.room_id in self.tasks_per_room:
+                if int(index) <= len(self.tasks_per_room[room.room_id]):
+                    html, text = self.tasks_per_room[room.room_id][int(index)-1].get_html_and_text_full_description()
+                    await bot.send_html(room, html, text)
+                else:
+                    await bot.send_text(room, f'Invalid index. Expected index from 1 to {len(self.tasks_per_room[room.room_id])}')
+            else:
+                await bot.send_text(room, 'No task list has been displayed in this room. First display task lists.')
+        else:
+            await bot.send_text(room, f'\'{index}\' is not a valid index.\nUsage !googletasks show <idx (integer)>')
 
     async def cmd_del_tasklist_from_room(self, bot, room, event, tasklist_name):
         bot.must_be_admin(room, event)
@@ -115,7 +151,11 @@ class MatrixModule(BotModule):
 
         if self.tasklists_rooms.get(room.room_id):
             if tasklist_name not in self.tasklists_rooms[room.room_id]:
-                self.tasklists_rooms[room.room_id].append(tasklist_name)
+                if self._get_tasklist_by_title(tasklist_name) is not None:
+                    self.tasklists_rooms[room.room_id].append(tasklist_name)
+                else:
+                    await bot.send_text(room, 'This google tasklist does not exist!')
+                    return
             else:
                 await bot.send_text(room, 'This google tasklist already added in this room!')
                 return
@@ -136,7 +176,7 @@ class MatrixModule(BotModule):
                 tasklists += f" - {tasklist['title']}\n"
         await bot.send_text(room, tasklists)
 
-    def _get_tasks_for_tasklist_and_date(self, tasklist_name: str, until_date: Optional[datetime]) -> List["GoogleTask"]:
+    def _get_tasks_for_tasklist_and_date(self, tasklist_name: str, until_date: Optional[datetime] = None) -> List["GoogleTask"]:
         """
         return tasks for given task list
         in case of until_date is defined, only tasks having a due date older or same as until_date are returned
@@ -154,17 +194,16 @@ class MatrixModule(BotModule):
 
         return tasks
 
-    async def send_tasks(self, bot, tasklist_name: str, room_id, until_date: Optional[datetime] = None):
-        tasklist: Optional["GoogleTasksList"] = self._get_tasklist_by_title(tasklist_name)
-        if tasklist is not None:
-            html, text = tasklist.to_html_and_text(until_date)
-            await bot.send_html_with_room_id(room_id, html, text)
-        else:
-            await bot.send_html_with_room_id(room_id, f'No task for <i>{tasklist_name}</i>', f'No task for {tasklist_name}')
-
     async def matrix_poll(self, bot, pollcount):
-        if pollcount % 6 == 0:  # every minute
-            pass
+        """
+        Display a list of tasks due for today and overdue tasks, at 7:30am except during weekends
+        """
+        if pollcount % 6 == 0:  # every 30 minutes
+            now = datetime.now()
+            if now.weekday() not in [5, 6] and now.hour == 7 and (35 < now.minute < 25):
+                for room_id in self.tasklists_rooms:
+                    room = MatrixRoom(room_id=room_id, own_user_id='')
+                    await self.cmd_list_today(bot, room, self.tasklists_rooms.get(room_id, []), display_tasklist_if_empty=False)
 
     def _get_tasklist_by_title(self, tasklist_title: str, completed: bool = False) -> Optional["GoogleTasksList"]:
         google_tasklist: Optional[GoogleTasksList] = None
@@ -174,44 +213,49 @@ class MatrixModule(BotModule):
                 if item.get("title", "") == tasklist_title:
                     google_tasklist = GoogleTasksList(item["id"], item["title"])
 
-                    gtasks_json = self.service.tasks().list(
-                        tasklist=item["id"], showCompleted=completed, showDeleted=False, showHidden=False).execute()
-
-                    tasks_items = gtasks_json["items"]
-                    for task in tasks_items:
-                        task["dt"] = "99991231"
-                        if "due" in task:
-                            task["dt"] = datetime.strptime(
-                                task["due"], "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%Y%m%d")
-
-                    tasks_items = sorted(tasks_items, key=lambda x: x["dt"])
-                    for task in tasks_items:
-                        if completed ^ (task.get("status", "") != "completed"):
-                            gtask = GoogleTask(
-                                task_id=task["id"],
-                                title=task.get("title", ""),
-                                notes=task.get("notes", ""),
-                                parent_id=task.get("parent", ""),
-                                due=task.get("due", ""),
-                                completed=completed,
-                                tasklist=google_tasklist,
-                                tasklist_id=item["id"])
-
-                            additional_link = _get_additional_link_from_notes(task)
-                            if additional_link is not None:
-                                gtask.add_link(
-                                    additional_link["link"], additional_link["description"], additional_link["type"])
-                            for link in task.get("links", []):
-                                gtask.add_link(link.get("link", ""), link.get(
-                                    "description", ""), link.get("type", ""))
-                            google_tasklist.append_task(gtask)
-
-                    break
+                    self._load_tasklist_tasks(google_tasklist, completed)
 
         except HttpError as err:
             self.logger.error(err)
 
         return google_tasklist
+
+    def _load_tasklist_tasks(self, google_tasklist: "GoogleTasksList", completed: bool = False):
+        """
+        Loads tasks for a given tasklist.
+        @param completed: by default completed tasks are not loaded except if this param is True
+        """
+        gtasks_json = self.service.tasks().list(
+            tasklist=google_tasklist.tasklist_id, showCompleted=completed, showDeleted=False, showHidden=False).execute()
+
+        tasks_items = gtasks_json["items"]
+        for task in tasks_items:
+            task["dt"] = "99991231"
+            if "due" in task:
+                task["dt"] = datetime.strptime(
+                    task["due"], "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%Y%m%d")
+
+        tasks_items = sorted(tasks_items, key=lambda x: x["dt"])
+        for task in tasks_items:
+            if completed ^ (task.get("status", "") != "completed"):
+                gtask = GoogleTask(
+                    task_id=task["id"],
+                    title=task.get("title", ""),
+                    notes=task.get("notes", ""),
+                    parent_id=task.get("parent", ""),
+                    due=task.get("due", ""),
+                    completed=completed,
+                    tasklist=google_tasklist,
+                    tasklist_id=google_tasklist.tasklist_id)
+
+                additional_link = _get_additional_link_from_notes(task)
+                if additional_link is not None:
+                    gtask.add_link(
+                        additional_link["link"], additional_link["description"], additional_link["type"])
+                for link in task.get("links", []):
+                    gtask.add_link(link.get("link", ""), link.get(
+                        "description", ""), link.get("type", ""))
+                google_tasklist.append_task(gtask)
 
     def _get_tasklist(self, tasklist_id: str) -> Optional["GoogleTasksList"]:
         tasklist: Optional[GoogleTasksList] = None
@@ -224,6 +268,18 @@ class MatrixModule(BotModule):
             self.logger.error(err)
 
         return tasklist
+
+    def _get_task_by_id(self, task_id: str) -> Optional["GoogleTask"]:
+        task: Optional[GoogleTask] = None
+        try:
+            tasklist_json = self.service.tasklists().get(tasklist=tasklist_id).execute()
+            task = GoogleTasksList(
+                tasklist_json["id"], tasklist_json.get("title", ""))
+
+        except HttpError as err:
+            self.logger.error(err)
+
+        return task
 
     def help(self):
         return 'Google tasklist. Lists 10 next tasks by default. today = list today\'s tasks. (Available commands: today, list, listavailable, add, del)'
@@ -262,33 +318,6 @@ class GoogleTasksList:
                 if task.parent_id == google_task.task_id:
                     google_task.append_subtask(task)
                     self.orphans.remove(task)
-
-    def to_html_and_text(self, until_date: Optional[datetime] = None) -> Tuple[str, str]:
-        """
-        Get html and text output for non completed tasks due until date if defined (otherwise all non completed tasks)
-        If task has no due date defined and until_date is defined, they will be ignored.
-        """
-        text = f"{self.name}\n"
-        html = f"<hr/><h2>{self.name}</h2>\n"
-        cpt = 0
-        for google_task in self.google_tasks.values():
-            if until_date is None or (google_task.due is not None and google_task.due <= until_date):
-                cpt += 1
-                task_html, task_text = google_task.to_html_and_text()
-                html += task_html + "\n <br/>"
-                text += task_text + "\n"
-
-        for orphan in self.orphans:  # add orphans removing parent link
-            if until_date is None or (orphan.due is not None and orphan.due <= until_date):
-                cpt += 1
-                orphan.parent_id = ""
-                task_html, task_text = orphan.to_html_and_text()
-                html += task_html + "\n<br/>"
-
-        if cpt == 0:
-            html = text = "No task!"
-
-        return html, text
 
     def get_open_tasks(self) -> int:
         nb_open_tasks = len(self.orphans)
@@ -336,7 +365,7 @@ class GoogleTask():
     def append_subtask(self, google_task: "GoogleTask"):
         self.sub_tasks.append(google_task)
 
-    def to_html_and_text(self, deep: int = 0) -> Tuple[str, str]:
+    def get_html_and_text_summary(self, deep: int = 0) -> Tuple[str, str]:
         html: str = ""
         text: str = ""
         favorite = "" if not self.favorite else "⭐ "
@@ -366,15 +395,57 @@ class GoogleTask():
             text_subtitle += f'\n         {link.link_type} {link.decription} {link.link}'
 
         html = (" " * deep + "└ " if self.parent_id !=
-                "" else "") + urgentness + favorite + " " + html_title + html_subtitle + '<br/><i><small>' + self.task_id + '</small></i>'
+                "" else "") + urgentness + favorite + " " + html_title + html_subtitle + '<br/>'
 
         text = (" " * deep + "└ " if self.parent_id !=
-                "" else "") + urgentness + favorite + " " + text_title + text_subtitle + '\n' + self.task_id
+                "" else "") + urgentness + favorite + " " + text_title + text_subtitle + '\n'
 
         for sub_task in self.sub_tasks:
-            sub_html, sub_text = sub_task.to_html_and_text(deep+1)
+            sub_html, sub_text = sub_task.get_html_and_text_summary(deep+1)
             html += "\n<br/>" + sub_html
             text += "\n" + sub_text
+
+        return html, text
+
+    def get_html_and_text_full_description(self) -> Tuple[str, str]:
+        html: str = ''
+        text: str = ''
+        favorite = '' if not self.favorite else '⭐'
+        html_subtitle = ''
+        text_subtitle = ''
+        urgentness = ''
+        html_title = self.title
+        text_title = self.title
+        if self.completed:
+            html_title = f'<s>{self.title}</s>'
+            text_title += ' (completed)'
+            urgentness = '⚫ '
+
+        else:
+            urgentness = '⚪ '
+            if self.due is not None:
+                if not self.completed:
+                    if self.due < datetime.now():
+                        urgentness = '🔴 '
+                    elif self.due.day <= datetime.now().day + 3 and self.due.month == datetime.now().month and self.due.year == datetime.now().year:
+                        urgentness = '🟠 '
+                html_subtitle = '📅 due ' + get_timeago(self.due) + '<br/>'
+                text_subtitle = '📅 due ' + get_timeago(self.due)
+
+        for link in self.links:
+            html_subtitle += f'         <i>{link.link_type} <a href="{link.link}">{link.decription}</a></i><br/>'
+            text_subtitle += f'\n         {link.link_type} {link.decription} {link.link}'
+
+        html = f'<hr/><h3>{urgentness} {favorite} {html_title}</h3>{html_subtitle}------------<br/>{self.notes}'
+
+        text = f'{urgentness} {favorite} {text_title}\n{text_subtitle}\n{self.notes}'
+
+        """
+        for sub_task in self.sub_tasks:
+            sub_html, sub_text = sub_task.get_html_and_text_summary()
+            html += '\n<br/>' + sub_html
+            text += '\n' + sub_text
+        """
 
         return html, text
 
