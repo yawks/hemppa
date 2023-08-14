@@ -84,7 +84,7 @@ class MatrixModule(BotModule):
             else:
                 await bot.send_text(room, 'Unknown command')
         else:
-            await self.cmd_list(bot, room, tasklist_names, None)
+            await self.cmd_list(bot, room, tasklist_names, None, display_tasklist_if_empty=True)
 
     async def cmd_list(self, bot, room, tasklist_names: List[str], until_date: Optional[datetime], display_tasklist_if_empty: bool):
         html = ''
