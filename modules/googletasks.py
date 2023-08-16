@@ -89,6 +89,7 @@ class MatrixModule(BotModule):
     async def cmd_list(self, bot, room, tasklist_names: List[str], until_date: Optional[datetime], display_tasklist_if_empty: bool):
         html = ''
         text = ''
+        self.logger.info('cmd_list, len of tasklist_names (%d)', len(tasklist_names))
         for tasklist_name in tasklist_names:
             cpt = 1
             self.logger.info('Listing tasks in tasklist "%s"', tasklist_name)
@@ -201,6 +202,7 @@ class MatrixModule(BotModule):
             now = datetime.now()
             if now.weekday() not in [5, 6] and now.hour == 7 and (35 < now.minute < 25):
                 for room_id in self.tasklists_rooms:
+                    self.logger.info('Display digest for room "%s" if any task is due', room_id)
                     room = MatrixRoom(room_id=room_id, own_user_id='')
                     await self.cmd_list_today(bot, room, self.tasklists_rooms.get(room_id, []), display_tasklist_if_empty=False)
 
