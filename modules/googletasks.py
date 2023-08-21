@@ -198,9 +198,9 @@ class MatrixModule(BotModule):
         """
         Display a list of tasks due for today and overdue tasks, at 7:30am except during weekends
         """
-        if pollcount % 6 == 0:  # every 30 minutes
+        if pollcount % 6 == 0:  # every minute
             now = datetime.now()
-            if now.weekday() not in [5, 6] and now.hour == 7 and (35 < now.minute < 25):
+            if now.weekday() not in [5, 6] and now.hour == 7 and now.minute == 30:
                 for room_id in self.tasklists_rooms:
                     self.logger.info('Display digest for room "%s" if any task is due', room_id)
                     room = MatrixRoom(room_id=room_id, own_user_id='')
