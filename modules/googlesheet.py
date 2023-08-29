@@ -2,6 +2,7 @@ from __future__ import print_function
 from typing import Dict, List, Optional, Tuple
 import os.path
 import gspread
+from datetime import datetime #do not remove, maybe used in exec()
 import pandas as pd
 from gspread import Client
 from oauth2client.service_account import ServiceAccountCredentials
@@ -56,7 +57,7 @@ class MatrixModule(BotModule):
         if len(args) > 1:
             match args[1]:
                 case 'help':
-                    await bot.send_text(room, self.long_help())
+                    await bot.send_text(room, self.long_help(bot))
                 case 'list':
                     #!googlesheet list
                     await self.cmd_list_room_sheets(bot, room)
@@ -95,13 +96,16 @@ class MatrixModule(BotModule):
             worksheet = sheet.worksheet('CA par année')
             df = pd.DataFrame(worksheet.get_all_records())
             _locals = locals()
-            exec(query, globals(), _locals)
-            if _locals.get('result', None) is not None:
-                text = str(_locals['result'])
-                html = f'<pre>{text}</pre>'
-                await bot.send_html(room, html, text)
-            else:
-                await bot.send_text(room, 'Your query should set a variable named "result".')
+            try:
+                exec(query, globals(), _locals)
+                if _locals.get('result', None) is not None:
+                    text = str(_locals['result'])
+                    html = f'<pre>{text}</pre>'
+                    await bot.send_html(room, html, text)
+                else:
+                    await bot.send_text(room, 'Your query should set a variable named "result".')
+            except Exception as e:
+                await bot.send_text(room, f'Error executing query:\n{query}\n-------------\nException:\n {repr(e)}')
 
     async def cmd_list_room_aliases(self, bot, room: MatrixRoom):
         self.logger.info('List aliases for room id %s', room.room_id)
@@ -263,8 +267,10 @@ class MatrixModule(BotModule):
             text += (
                 '\n- "!googlesheet add <doc id> <doc name>": add a doc. The <doc name> will used for following commands.'
                 '\n- "!googlesheet alias add <doc name> <alias name> <panda query>": alias a panda query for the given <doc name>.'
-                '\n\t\teg: !googlesheet alias "my sheet" "get_table" result=df.groupby("sheet name").sum().filter(["Col 1", "Col 2", "Col 3"]).transpose()'
-                '\n\t\t_df_ is the variable name for panda object. Multiple lines can be set for the alias.\n\t\tA variable named "result" must be set/'
+                '\n\t\teg: !googlesheet alias "my sheet" "get_table" result=df.groupby(\'sheet name\').sum().filter([\'Col 1\', \'Col 2\', \'Col 3\']).transpose()'
+                '\n\t\t_df_ is the variable name for panda object. Multiple lines can be set for the alias.'
+                '\n\t\tA variable named "result" must be set'
+                '\n\t\tWarning, this string should not contain double quotes'
                 '\n- "!googlesheet alias del <alias name> ": delete alias <alias name>.'
             )
         return text
