@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Tuple
 import os.path
 import gspread
 from datetime import datetime #do not remove, maybe used in exec()
+import calendar #do not remove, maybe used in exec()
 import pandas as pd
 from gspread import Client
 from oauth2client.service_account import ServiceAccountCredentials
