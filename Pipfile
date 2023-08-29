@@ -20,6 +20,7 @@ nest_asyncio = "*"
 maya = "*"
 deepl = "*"
 timeago = "*"
+gspread = "*"
 
 [dev-packages]
 pylint = "*"
