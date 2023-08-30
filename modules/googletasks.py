@@ -93,16 +93,18 @@ class MatrixModule(BotModule):
         for tasklist_name in tasklist_names:
             cpt = 1
             self.logger.info('Listing tasks in tasklist "%s"', tasklist_name)
-            tasklist_html = f'<h4>{tasklist_name}</h4>\n'
+            tasklist_html = f'<h4>{tasklist_name}</h4>\n<table style="border:0">'
             tasklist_text = f'{tasklist_name}\n'
             self.tasks_per_room[room.room_id] = []
             for task in self._get_tasks_for_tasklist_and_date(tasklist_name, until_date):
                 self.tasks_per_room[room.room_id].append(task)
                 task_html, task_text = task.get_html_and_text_summary()
-                tasklist_html += f'{cpt} - {task_html}'
+                tasklist_html += f'<tr><td>{cpt}</td><td>{task_html}</td></td></tr>'
                 tasklist_text += f'{cpt} - {task_text}'
 
                 cpt += 1
+
+            tasklist_html += '</table>'
 
             if cpt == 1:
                 tasklist_html += 'Nothing to do! 😙'
