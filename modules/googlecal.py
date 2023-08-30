@@ -86,7 +86,7 @@ class MatrixModule(BotModule):
         except Exception:
             self.logger.error('Getting calendar list failed!')
 
-    async def matrix_message(self, bot, room, event):
+    async def matrix_message(self, bot, room: MatrixRoom, event):
         if not self.service:
             await bot.send_text(room, 'Google calendar not set up for this bot.')
             return
@@ -159,7 +159,7 @@ class MatrixModule(BotModule):
 
         if len(events) > 0:
             self.logger.info('Found %d events', len(events))
-            await self.send_events(bot, events, room.room_id, group_in_date=group_in_date)
+            await self.send_events(bot, events, room, group_in_date=group_in_date)
         else:
             self.logger.info('No events found')
             await bot.send_text(room, 'No events found, try again later :)')
@@ -181,15 +181,16 @@ class MatrixModule(BotModule):
         await self.send_html_same_day_events(bot, room, events_of_same_day, previous_day)
 
     async def send_html_same_day_events(self, bot, room: MatrixRoom, events_of_same_day, current_day):
-        html = f"<hr/><h2>📅 {current_day}</h2>\n"
-        text = f" 📅 {current_day}\n"
+        html = f'<hr/><h2>📅 &nbsp;&nbsp;{current_day}</h2>\n'
+        text = f' 📅 {current_day}\n'
         for event in events_of_same_day:
             start_hour, end_hour = self.get_event_hours(event, current_day)
 
             img_videocall, evt_url = await self._get_videocall_url_and_logo_from_summary(bot, event)
-            html += f'<strong>{start_hour}{end_hour}</strong> <a href="{evt_url}">{event["summary"]}</a> {img_videocall}<br/>\n'
+            html += f'<br/><strong><code>{start_hour}{end_hour}</code></strong> <a href="{evt_url}">{event["summary"]} {img_videocall}</a>\n'
             text += f' - {start_hour}{end_hour} \n {event["summary"]}\n\n'
-        await bot.send_html(room, html, text, msgtype="m.text")
+        
+        await bot.send_html(room, html, text, msgtype='m.text')
 
     def get_event_hours(self, event, current_day: str):
         start_hour = ""
@@ -281,8 +282,8 @@ class MatrixModule(BotModule):
         start_time = datetime.utcnow()
         start_time = start_time + timedelta(minutes=1)
         events_result = self.service.events().list(calendarId=calid, timeMin=start_time.isoformat() + 'Z',
-                                                               maxResults=10, singleEvents=True,
-                                                               orderBy='startTime').execute()
+                                                   maxResults=10, singleEvents=True,
+                                                   orderBy='startTime').execute()
         now_time = datetime.now(pytz.timezone(os.environ.get('TZ', 'UTC')))
 
         for event in events_result.get('items', []):
@@ -339,7 +340,7 @@ class MatrixModule(BotModule):
             self.logger.error('Something went wrong uploading meet logo.')
 
         if matrix_uri != '':
-            img_html = f'<img src="{matrix_uri}"/>'
+            img_html = f'<img src="{matrix_uri}" height="24px"/>'
         else:
             # if no video call url found, get the general html link
             url = event['htmlLink']
