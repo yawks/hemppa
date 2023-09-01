@@ -440,7 +440,9 @@ class Bot:
         if moduleobject is not None:
             if moduleobject.enabled:
                 try:
+                    self.room_typing(room.room_id)
                     await moduleobject.matrix_message(self, room, event)
+                    self.room_typing(room.room_id, False)
                 except CommandRequiresAdmin:
                     await self.send_text(room, f'Sorry, you need admin power level in this room to run that command.', event=event)
                 except CommandRequiresOwner:
@@ -558,6 +560,14 @@ class Bot:
             return response.json()
         self.logger.error(f'Getting account data failed: {response} {response.json()} - this is normal if you have not saved any settings yet.')
         return None
+
+    def room_typing(self, room_id: str, typing:bool = True):
+        # room_typing of matrix-nio is not working :-/
+        userid = urllib.parse.quote(self.matrix_user)
+        ad_url = f"{self.client.homeserver}/_matrix/client/v3/rooms/{room_id}/typing/{userid}?access_token={self.client.access_token}"
+        body = f'{{"typing": {str(typing).lower()}, "timeout": 30000}}'
+        response = requests.put(ad_url, data=body)
+        self.__handle_error_response(response)
 
     def __handle_error_response(self, response):
         if response.status_code == 401:
