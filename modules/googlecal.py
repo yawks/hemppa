@@ -186,10 +186,10 @@ class MatrixModule(BotModule):
         for event in events_of_same_day:
             start_hour, end_hour = self.get_event_hours(event, current_day)
 
-            img_videocall, evt_url = await self._get_videocall_url_and_logo_from_summary(bot, event)
+            img_videocall, evt_url, _ = await self._get_videocall_url_and_logo_from_summary(bot, event, img_size=32)
             html += f'<br/><strong><code>{start_hour}{end_hour}</code></strong> <a href="{evt_url}">{event["summary"]} {img_videocall}</a>\n'
             text += f' - {start_hour}{end_hour} \n {event["summary"]}\n\n'
-        
+
         await bot.send_html(room, html, text, msgtype='m.text')
 
     def get_event_hours(self, event, current_day: str):
@@ -290,7 +290,7 @@ class MatrixModule(BotModule):
             event_start_time = maya.parse(event['start'].get('dateTime', event['start'].get('date'))).datetime(to_timezone=os.environ.get('TZ', 'UTC'))
             if now_time <= event_start_time <= now_time + timedelta(minutes=1):
                 start_hour, end_hour = self.get_event_hours(event, datetime.strftime(now_time, '%a %d %b'))
-                html, text = self.get_html_and_text_messages(event, start_hour, end_hour)
+                html, text = await self.get_html_and_text_messages(event, bot, start_hour, end_hour)
                 await bot.send_html(room, html, text, msgtype="m.text")
 
     async def daily_digest(self, room: MatrixRoom, calid: str, bot):
@@ -301,10 +301,12 @@ class MatrixModule(BotModule):
         if now.weekday() not in [5, 6] and now.hour == 7 and now.minute == 30:
             await self.send_events(bot, self.list_today(calid), room)
 
-    def get_html_and_text_messages(self, event, start_hour, end_hour):
-        html = f'<hr/>📣 <i>1 minute until this event:</i><br/><strong>{start_hour}{end_hour} <a href="{event["htmlLink"]}">{event["summary"]}</a></strong><br/>\n'
-        if 'location' in event:
-            html += '<br/>🌍 ' + event['location']
+    async def get_html_and_text_messages(self, event, bot, start_hour, end_hour):
+        img_videocall, evt_url, video_call_name = await self._get_videocall_url_and_logo_from_summary(bot, event)
+        html = f'<hr/>📣 <i>1 minute until this event:</i><br/><strong>{start_hour}{end_hour} <a href="{evt_url}">{event["summary"]}</a></strong><br/>\n'
+        if event.get('location', video_call_name) != '':
+            icon = '🌍' if img_videocall == '' else img_videocall
+            html += f'<br/>{icon} {event.get("location", video_call_name)}'
         if 'attendees' in event:
             html += '<br/>🙋 '
             cpt = 0
@@ -319,8 +321,9 @@ class MatrixModule(BotModule):
         text = f' - {start_hour}{end_hour} \n {event["summary"]}\n\n'
         return html, text
 
-    async def _get_videocall_url_and_logo_from_summary(self, bot, event) -> Tuple[str, str]:
+    async def _get_videocall_url_and_logo_from_summary(self, bot, event, img_size: int = 12) -> Tuple[str, str, str]:
         img_html = ''
+        video_call_name = ''
         url = event.get('conferenceData', {}).get(
             'entryPoints', [{}])[0].get('uri', '')
         if url == '':
@@ -333,16 +336,18 @@ class MatrixModule(BotModule):
         matrix_uri = ''
         try:
             if url.find('meet.google.com') > -1:
-                matrix_uri, _, _, _, _ = await bot.upload_image('https://upload.wikimedia.org/wikipedia/commons/thumb/9/9b/Google_Meet_icon_%282020%29.svg/12px-Google_Meet_icon_%282020%29.svg.png?20221213135236', blob_content_type="image/png")
+                matrix_uri, _, _, _, _ = await bot.upload_image(f'https://upload.wikimedia.org/wikipedia/commons/thumb/9/9b/Google_Meet_icon_%282020%29.svg/{str(img_size)}px-Google_Meet_icon_%282020%29.svg.png?20221213135236', blob_content_type="image/png")
+                video_call_name = 'Google Meet'
             elif url.find('teams.microsoft.com') > -1:
-                matrix_uri, _, _, _, _ = await bot.upload_image('https://upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Microsoft_Office_Teams_%282018%E2%80%93present%29.svg/12px-Microsoft_Office_Teams_%282018%E2%80%93present%29.svg.png?20210603103011', blob_content_type="image/png")
+                matrix_uri, _, _, _, _ = await bot.upload_image(f'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Microsoft_Office_Teams_%282018%E2%80%93present%29.svg/{str(img_size)}px-Microsoft_Office_Teams_%282018%E2%80%93present%29.svg.png?20210603103011', blob_content_type="image/png")
+                video_call_name = 'Microsoft Teams'
         except (UploadFailed, TypeError, ValueError):
             self.logger.error('Something went wrong uploading meet logo.')
 
         if matrix_uri != '':
-            img_html = f'<img src="{matrix_uri}" height="24px"/>'
+            img_html = f'<img src="{matrix_uri}" height="{img_size*2}px"/>'
         else:
             # if no video call url found, get the general html link
             url = event['htmlLink']
 
-        return img_html, url
+        return img_html, url, video_call_name
